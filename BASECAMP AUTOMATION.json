@@ -1,0 +1,453 @@
+{
+  "name": "My workflow",
+  "nodes": [
+    {
+      "parameters": {
+        "functionCode": "\n\n// --- Configuration ---\nconst BASECAMP_ACCOUNT_ID = '6074776';\n\n// --- Data Extraction ---\nconst webhookPayload = $json.body;\nconst recording = webhookPayload.recording;\nconst kind = webhookPayload.kind;\n\n// --- Initial Payload Validation ---\nif (!recording) {\n  console.error(\"Webhook payload is invalid or missing the 'recording' object. Stopping workflow.\");\n  return []; // Stop workflow execution\n}\n\n// --- Dynamic Data Parsing Logic ---\nlet projectId = null;\nlet commentableId = null;\nlet assetApiUrl = null; // We will extract the API URL to fetch the asset later\n\n// 1. Extract Project ID\nprojectId = recording.bucket?.id;\n\n// 2. Determine the correct \"Thread ID\" to post the comment back to.\nif (kind === 'comment_created' && recording.parent?.id) {\n    // For a comment, we want to reply in the same thread (the parent).\n    commentableId = recording.parent.id;\n} else {\n    // For new uploads, to-dos, etc., the item itself is the thread.\n    commentableId = recording.id;\n}\n\n// 3. Extract the Asset's API URL\n// For 'upload_active' events, we must get the API URL from `recording.url`.\n// We will use this in the *next* n8n node to get the actual download link.\nif (recording.type === 'Upload' && recording.url) {\n  assetApiUrl = recording.url;\n} else if (Array.isArray(recording.attachments) && recording.attachments.length > 0) {\n  // Fallback for events that have a direct attachment URL (like a comment with a file).\n  // Note: This webhook doesn't have an `attachments` array, so this block will be skipped.\n  assetApiUrl = recording.attachments[0].url; // Assuming the attachment URL is the API URL\n}\n\n// --- Final Validation ---\nif (!projectId || !commentableId || !assetApiUrl) {\n  console.log(`\n    Skipping workflow: The event '${kind}' did not contain an asset URL or required IDs.\n    - Project ID: ${projectId}\n    - Commentable ID: ${commentableId}\n    - Asset API URL: ${assetApiUrl}\n  `);\n  return []; // Stop workflow gracefully if essential data is missing.\n}\n\n// --- Prepare Output ---\nconst outputData = {\n  baseUrl: `https://3.basecampapi.com/${BASECAMP_ACCOUNT_ID}`,\n  projectId: projectId,\n  commentableId: commentableId, // Use this ID to post the QC comment back\n  assetApiUrl: assetApiUrl,   // Use this URL in the NEXT node to get the download link\n};\n\n// Return the structured data for the next n8n node.\nreturn [{ json: outputData }];"
+      },
+      "name": "Parse Webhook Data",
+      "type": "n8n-nodes-base.function",
+      "typeVersion": 1,
+      "executeOn": "main",
+      "meta": {
+        "title": "2. Parse Webhook Data (Get IDs/URL)"
+      },
+      "id": "05bfee55-3c82-49be-b498-cf1906d406c4",
+      "position": [
+        128,
+        -64
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.assetApiUrl }}",
+        "authentication": "genericCredentialType",
+        "genericAuthType": "oAuth2Api",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        352,
+        -64
+      ],
+      "id": "b195cd99-1502-46c4-9708-71d99fab8395",
+      "name": "HTTP Request",
+      "credentials": {
+        "oAuth2Api": {
+          "id": "2EnyAi987QfdJH9e",
+          "name": "Test credential"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "promptType": "define",
+        "text": "=Only output video, image or document and based on the file extension in the url provided:  {{ $json.app_download_url }}\n\nclassify png, jpg, webp and those types of files as image and same for vidoe aand documents\n\nyour final output should be a single word like image, video or document",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.agent",
+      "typeVersion": 2.2,
+      "position": [
+        576,
+        -64
+      ],
+      "id": "cfc6c3c1-6836-4dc8-a447-8d2f47f13104",
+      "name": "AI Agent"
+    },
+    {
+      "parameters": {
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.lmChatGoogleGemini",
+      "typeVersion": 1,
+      "position": [
+        648,
+        160
+      ],
+      "id": "7b12b835-7ae8-4f7e-88ab-7e5031900741",
+      "name": "Google Gemini Chat Model",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "hREnJ9kT1LcfTHkL",
+          "name": "Google Gemini(PaLM) Api account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.output }}",
+                    "rightValue": "image",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    },
+                    "id": "d89ff41a-bcaf-4917-a284-b57e09f6af3d"
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "76738722-27ac-402a-a6f8-15e35d0f7139",
+                    "leftValue": "={{ $json.output }}",
+                    "rightValue": "video",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict",
+                  "version": 2
+                },
+                "conditions": [
+                  {
+                    "id": "8108c588-22fd-4871-adeb-bcfb94a5dfbe",
+                    "leftValue": "={{ $json.output }}",
+                    "rightValue": "document",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals",
+                      "name": "filter.operator.equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              }
+            }
+          ]
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3.3,
+      "position": [
+        928,
+        -80
+      ],
+      "id": "9ddbc934-3c42-41be-b207-778976dbec13",
+      "name": "Switch"
+    },
+    {
+      "parameters": {
+        "resource": "image",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-pro",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-pro"
+        },
+        "text": "You are a Creative Quality Control (QC) Specialist at a digital agency. Your job is to analyze a creative asset (image, video, web layout, or print design) based on strict brand and platform-specific guidelines.\n\nYour output must be a structured QC report using the following format only:\n\nQC Report:\n\nLogo: [Pass/Fail/Needs Review] \n\nColors: [Pass/Fail/Needs Review] \n\nTypography: [Pass/Fail/Needs Review] \n\nGrammar: [Pass/Fail/Needs Review] \n\nMargins: [Pass/Fail/Needs Review] \n\nReadability: [Pass/Fail/Needs Review] \n\nPlatform Fit: [Pass/Fail/Needs Review] \n\nOther Notes: [Optional brief comment if needed]\n\nEvaluate based on the following criteria:\n\nBrand Guidelines:\n\nLogo must be present, clear, and unobstructed\n\nBrand colors must include Hex #1A2B4C (Brand Navy) and #FFD700 (Brand Gold)\n\nTypography must use brand-approved fonts and be consistent\n\nText must be free of spelling or grammar errors\n\nAt least 10px padding must be present around all edges\n\nVisual layout must be balanced with sufficient contrast\n\nPlatform-Specific Checks (apply only if relevant to the asset type):\n\nFor static images and banners:\n\nMust be clear and high resolution (72+ DPI for web, 300 DPI for print)\n\nDimensions must match platform requirements\n\nNo pixelation or artifacts\n\nText and logos must not touch or overflow edges\n\nFor video assets:\n\nMust use correct aspect ratio (e.g. 16:9, 9:16)\n\nBranding must appear clearly at intro or outro\n\nMotion should be smooth and on-brand\n\nAudio (if present) must be clear and legal\n\nSubtitles must be timed properly and error-free\n\nFor web or digital assets:\n\nLayout must be responsive on desktop and mobile\n\nCTAs must be visible and correctly linked\n\nImages must be optimized for speed\n\nAccessibility standards must be met\n\nFor social media:\n\nCorrect aspect ratio and size for platform (e.g. 1080x1920 for stories)\n\nText must not be cut off in preview\n\nHashtags, mentions, and CTAs must be correctly applied\n\nFor print:\n\nFile must use CMYK color mode\n\nInclude correct bleed and crop marks\n\nFonts must be outlined or embedded\n\nCritical elements must be within safe print margins\n\nOnly return the formatted QC Report. Do not explain your reasoning or include any additional text outside the report.",
+        "imageUrls": "={{ $('HTTP Request').item.json.app_download_url }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        1152,
+        -256
+      ],
+      "id": "016ec491-1d87-4e2c-ba91-2dc8406c033f",
+      "name": "Analyze an image",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "nFgTjbwAXJ9ZjNeA",
+          "name": "Google Gemini(PaLM) Api account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "video",
+        "operation": "analyze",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-pro",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-pro"
+        },
+        "text": "You are a meticulous Creative Quality Control (QC) Specialist at a digital agency. Your task is to analyze the provided video asset based on our strict brand guidelines.\n\n---\n\n## Brand Guidelines to check against:\n\n- **Logo:** The official company logo must be present, clear, and unobstructed **throughout the video's duration.**\n- **Brand Colors:** The primary colors used must be Hex **#1A2B4C (Brand Navy)** and **#FFD700 (Brand Gold).**\n- **Grammar & Text:** All text (including **on-screen graphics and captions**) must be free of spelling and grammatical errors.\n- **Margins/Safe Zones:** There must be at least a **10px \"safe zone\" or padding** around all edges of the creative. Content (including **text and key visual elements**) should not feel cramped or touch the edges.\n\n---\n\n## Your Instructions:\n\nAnalyze the asset and provide your feedback as a single, formatted string. Do not add any extra explanations, greetings, or introductory text. Your entire response must follow this exact format:\n\n- Logo: [Result] ■ - Grammar: [Result] ■ - Margins: [Result] ■ - Colors: [Result] ■\n\n---\n\n## Analysis Results:\n\nBased on the video provided, here is my QC report:",
+        "videoUrls": "={{ $('HTTP Request').item.json.app_download_url }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        1152,
+        -64
+      ],
+      "id": "7b2fb13f-b75b-4af4-a83d-cc9f8912c997",
+      "name": "Analyze video",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "hREnJ9kT1LcfTHkL",
+          "name": "Google Gemini(PaLM) Api account 3"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "resource": "document",
+        "modelId": {
+          "__rl": true,
+          "value": "models/gemini-2.5-pro",
+          "mode": "list",
+          "cachedResultName": "models/gemini-2.5-pro"
+        },
+        "text": "You are a meticulous Creative Quality Control (QC) Specialist at a digital agency. Your task is to analyze the provided creative asset (**document, PDF, or presentation**) based on our strict brand guidelines.\n\n---\n\n## Brand Guidelines to check against:\n\n- **Logo:** The official company logo must be present, clear, and unobstructed **on the primary pages.**\n- **Brand Colors:** The primary colors used must be Hex **#1A2B4C (Brand Navy)** and **#FFD700 (Brand Gold).**\n- **Grammar & Text:** All text (including **titles, headers, and body copy**) must be free of spelling and grammatical errors.\n- **Margins/Safe Zones:** There must be at least a **10px \"safe zone\" or padding** around all edges of the creative. Content should not feel cramped or touch the edges.\n\n---\n\n## Your Instructions:\n\nAnalyze the asset and provide your feedback as a single, formatted string. Do not add any extra explanations, greetings, or introductory text. Your entire response must follow this exact format:\n\n- Logo: [Result]  - Grammar: [Result]  - Margins: [Result]  - Colors: [Result] \n\n---\n\n## Analysis Results:\n\nBased on the **document** provided, here is my QC report:",
+        "documentUrls": "={{ $('HTTP Request').item.json.app_download_url }}",
+        "options": {}
+      },
+      "type": "@n8n/n8n-nodes-langchain.googleGemini",
+      "typeVersion": 1,
+      "position": [
+        1152,
+        128
+      ],
+      "id": "31da1226-9337-424c-b2e2-5e90c7d67b02",
+      "name": "Analyze document",
+      "credentials": {
+        "googlePalmApi": {
+          "id": "j9d5sKwzghNkCUfI",
+          "name": "Google Gemini(PaLM) Api account 4"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "operation": "append",
+        "documentId": {
+          "__rl": true,
+          "value": "1Am9NrzLQA7WyLOx-GstV3GYqCZd2I3D6soKp3MZYiDk",
+          "mode": "list",
+          "cachedResultName": "n8n",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1Am9NrzLQA7WyLOx-GstV3GYqCZd2I3D6soKp3MZYiDk/edit?usp=drivesdk"
+        },
+        "sheetName": {
+          "__rl": true,
+          "value": "gid=0",
+          "mode": "list",
+          "cachedResultName": "Sheet1",
+          "cachedResultUrl": "https://docs.google.com/spreadsheets/d/1Am9NrzLQA7WyLOx-GstV3GYqCZd2I3D6soKp3MZYiDk/edit#gid=0"
+        },
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "RESULT": "={{ $json.content.parts[0].text }}"
+          },
+          "matchingColumns": [
+            "RESULT"
+          ],
+          "schema": [
+            {
+              "id": "RESULT",
+              "displayName": "RESULT",
+              "required": false,
+              "defaultMatch": false,
+              "display": true,
+              "type": "string",
+              "canBeUsedToMatch": true,
+              "removed": false
+            }
+          ],
+          "attemptToConvertTypes": false,
+          "convertFieldsToString": false
+        },
+        "options": {}
+      },
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.7,
+      "position": [
+        1456,
+        -64
+      ],
+      "id": "01827601-b828-43bb-9c6d-d9e30a9bec2d",
+      "name": "Append row in sheet",
+      "credentials": {
+        "googleSheetsOAuth2Api": {
+          "id": "ZHgV7hy2bSykT5RX",
+          "name": "Google Sheets account 2"
+        }
+      }
+    },
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "basecamp-qc-trigger",
+        "options": {}
+      },
+      "name": "webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "executeOn": "main",
+      "meta": {
+        "title": "1. Trigger (Basecamp Webhook)"
+      },
+      "id": "394995ed-ef3f-44e4-9b15-8e10e0c7073f",
+      "position": [
+        -96,
+        -64
+      ],
+      "webhookId": "009d218b-4214-4f44-a645-17a509889b5c"
+    }
+  ],
+  "pinData": {},
+  "connections": {
+    "Parse Webhook Data": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Google Gemini Chat Model": {
+      "ai_languageModel": [
+        [
+          {
+            "node": "AI Agent",
+            "type": "ai_languageModel",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Agent": {
+      "main": [
+        [
+          {
+            "node": "Switch",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Switch": {
+      "main": [
+        [
+          {
+            "node": "Analyze an image",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Analyze video",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Analyze document",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze an image": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze video": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Analyze document": {
+      "main": [
+        [
+          {
+            "node": "Append row in sheet",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "webhook": {
+      "main": [
+        [
+          {
+            "node": "Parse Webhook Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "versionId": "b9e69f98-c598-4ff3-88ec-98d2681298cc",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "91597139819e5166ec4a1f03b08d3589dd9fa29d7d28dbb2b4bfff04dfebbe91"
+  },
+  "id": "0P0FHjcNQ7eMeobD",
+  "tags": []
+}
